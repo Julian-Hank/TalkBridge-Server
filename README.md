@@ -15,8 +15,8 @@ The TalkBridge server is a **FastAPI** application that receives audio from the 
 - **Real-time WebSocket pipeline** — receives PCM 16-bit audio chunks and returns translated text + TTS audio
 - **Voice Activity Detection (VAD)** via `webrtcvad` — segments audio at natural speech boundaries
 - **Speech-to-Text** via `faster-whisper` (`large-v3-turbo` on CUDA, `medium` on CPU)
-- **Machine translation** via `argostranslate` — fully offline, no API costs
-- **Text-to-Speech** via `edge-tts` — neural voices for 17+ languages
+- **Machine translation** via `OPUS-MT` and `argostranslate` — offline, no API costs
+- **Text-to-Speech** via `piper` - offline, available for 30 languages
 - **SSE streaming** for the `/transcript` endpoint — sends estimated time before the result
 - **GPU acceleration** via CUDA (NVIDIA) — sub-0.25s transcription on RTX 3070
 - **CPU fallback** with `int8` quantization when no GPU is available
@@ -29,8 +29,8 @@ The TalkBridge server is a **FastAPI** application that receives audio from the 
 |---|---|
 | Web framework | FastAPI + uvicorn |
 | Speech-to-Text | faster-whisper |
-| Translation | argostranslate |
-| Text-to-Speech | edge-tts |
+| Translation | OPUS-MT & argostranslate |
+| Text-to-Speech | piper |
 | VAD | webrtcvad |
 | Audio processing | NumPy |
 | GPU acceleration | CUDA via PyTorch |
@@ -51,9 +51,11 @@ pip install -r requirements.txt
 
 > **Note:** Install the CUDA-enabled build of PyTorch. See [pytorch.org](https://pytorch.org/get-started/locally/) for the correct install command for your system.
 
+>  Installing via the requirements.txt can have problems - pytoml coming soon
+
 ### Install argostranslate language packages
 
-Before running the server, install the required translation packages via the api/argos_install.py file
+Before running the server, install the required translation and tts packages (see /helper folder for OPUS-MT installation script - piper and argostranslate download scripts might be added in the future for more convenience) 
 
 ---
 
@@ -78,7 +80,8 @@ Main real-time translation endpoint.
 {
   "source_lang": "de",
   "target_lang": "en",
-  "voice_gender": "male" // not finished: always male right now 
+  "use_better_translation": true, //true => opus, false => argos
+  "voice_gender": "male" // not unfinished
 }
 ```
 
