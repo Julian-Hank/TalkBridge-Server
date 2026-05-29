@@ -30,7 +30,7 @@ import gc
 
 # logging.basicConfig(filename=None, )
 logger = logging.getLogger(__name__)
-LOG_LEVEL = logging.INFO
+LOG_LEVEL = logging.DEBUG
 
 logger.setLevel(LOG_LEVEL)
 
@@ -96,6 +96,9 @@ if USE_CUDA:
     torch.backends.cudnn.benchmark = True
 
 torch.set_grad_enabled(False)
+
+# Manche Sätze sind im Whisper Modell übertrainiert. Damit diese aktzeptiert werden wird eine höhere confidence benötigt.
+OVERTRAINED_PHRASES = ["Vielen Dank.", "Thank you.", "Bye.", "Tschüss.", "Merci.", "Gracias.", "Grazie.", "Спасибо.", "Amen."]
 
 def _find_piper_model(lang: str) -> str | None:
     pattern = os.path.join(PIPER_MODELS_DIR, lang, "*.onnx")
@@ -183,10 +186,22 @@ class LiveTranslationSession:
                     temperature=0,
                     condition_on_previous_text=False,
                     vad_filter=True,
-                    no_speech_threshold=0.7,
-                    log_prob_threshold=-0.8
+                    # no_speech_threshold=0.25,
+                    # log_prob_threshold=-0.7
                 )
-                text = " ".join(s.text for s in segments).strip()
+                segments = list(segments)
+                texts = []
+                for segment in segments:
+                    segment_text = segment.text.strip()
+                    if segment.avg_logprob < -0.95:
+                        continue
+                    if segment_text in OVERTRAINED_PHRASES and segment.avg_logprob < -0.425:
+                        logger.debug(f"Partial segment '{segment_text}' filtered out (avg_logprob: {segment.avg_logprob:.2f})")
+                        continue
+                    texts.append(segment_text)
+                text = " ".join(t for t in texts).strip()
+                    
+                print_debug_info(segments)
 
                 if text:
                     results.append({"type": "final", "text": text, "audio_duration": audio_duration})
@@ -223,10 +238,22 @@ class LiveTranslationSession:
                     temperature=0,
                     condition_on_previous_text=False,
                     vad_filter=True,
-                    no_speech_threshold=0.7,
-                    log_prob_threshold=-0.725
+                    # no_speech_threshold=0.2,
+                    # log_prob_threshold=-0.625
                 )
-                text = " ".join(s.text for s in segments).strip()
+                segments = list(segments)
+                texts = []
+                for segment in segments:
+                    segment_text = segment.text.strip()
+                    if segment.avg_logprob < -0.95:
+                        continue
+                    if segment_text in OVERTRAINED_PHRASES and segment.avg_logprob < -0.425:
+                        logger.debug(f"Partial segment '{segment_text}' filtered out (avg_logprob: {segment.avg_logprob:.2f})")
+                        continue
+                    texts.append(segment_text)
+                text = " ".join(t for t in texts).strip()
+                    
+                print_debug_info(segments)
 
                 
                 if text:
@@ -242,7 +269,11 @@ class LiveTranslationSession:
                         self.prebuffer.clear()
                         self.last_speech_time = None
                         
-                    self.speech_start_time = time()
+                    # self.speech_start_time = time()
+                    self.speech_start_time = time() - (PARTIAL_AUDIO_THRESHOLD - 1.5)
+                else:
+                    self.reset()
+                    
 
         return results
     
@@ -255,11 +286,11 @@ class LiveTranslationSession:
         self.partial_result_sent = False
 
 
-# def print_debug_info(segments):
-#     logger.debug("*"*30)
-#     for segment in segments:
-#         logger.debug(f"segment avg_logprob: {segment.avg_logprob}, no_speech_prob: {segment.no_speech_prob}")
-#     logger.debug("*"*30)
+def print_debug_info(segments):
+    logger.debug("*"*30)
+    for segment in segments:
+        logger.debug(f"segment avg_logprob: {segment.avg_logprob}")
+    logger.debug("*"*30)
 
 
 class TranslationRequest:
