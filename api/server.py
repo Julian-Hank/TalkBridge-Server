@@ -5,7 +5,7 @@ os.environ["ARGOS_PACKAGES_DIR"] = os.path.join(BASE_DIR, "argos", "models")
 
 import collections
 import json
-from time import time
+from time import time, localtime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import logging
@@ -30,7 +30,7 @@ import gc
 
 # logging.basicConfig(filename=None, )
 logger = logging.getLogger(__name__)
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 
 logger.setLevel(LOG_LEVEL)
 
@@ -46,6 +46,7 @@ SAMPLE_RATE = 16000
 VAD_FRAME_MS = 30        # ms
 PREBUFFER_DURATION = 1 # Sekunden
 POST_SPEECH_SILENCE = 0.5 # Sekunden
+PARTIAL_AUDIO_THRESHOLD = 2.75 # Sekunden
 CHUNK_SIZE = 3200
 VOICES = {
     # "ar": {"male": "ar-AE-HamdanNeural", "female": "ar-AE-FatimaNeural"},
@@ -121,7 +122,10 @@ class LiveTranslationSession:
         
         self.STATE = "WAITING"
         self.last_speech_time = None
+        self.speech_start_time = None
         self.audio_buffer = []
+        self.partial_result_sent = False
+        # self.empty_result_since = None
         
         max_prebuffer_frames = int(PREBUFFER_DURATION * SAMPLE_RATE * 2 / CHUNK_SIZE)
         self.prebuffer = collections.deque(maxlen=max_prebuffer_frames)
@@ -132,6 +136,8 @@ class LiveTranslationSession:
 
     def process_audio_chunk(self, audio_bytes: bytes):
         results = []
+        
+        # logger.debug(f"State: {self.STATE}")
         
         if self.STATE == "WAITING":
             self.prebuffer.append(audio_bytes)
@@ -145,6 +151,7 @@ class LiveTranslationSession:
 
         elif self.STATE == "TRANSCRIBING":
             self.audio_buffer.append(audio_bytes)
+            self.speech_start_time = time() if self.speech_start_time is None else self.speech_start_time
 
             # VAD
             frame_len = int(SAMPLE_RATE * (VAD_FRAME_MS / 1000.0)) * 2
@@ -158,6 +165,15 @@ class LiveTranslationSession:
                 combined = b"".join(self.audio_buffer)
                 audio_float = self._bytes_to_float32(combined)
                 audio_duration = len(audio_float) / SAMPLE_RATE
+                if audio_duration < 1.2:
+                    # zu kurz, wahrscheinlich Fehltrigger -> Reset ohne Transkription
+                    self.STATE = "WAITING"
+                    self.audio_buffer = []
+                    self.prebuffer.clear()
+                    self.partial_result_sent = False
+                    self.speech_start_time = None
+                    self.last_speech_time = None
+                    return []
 
                 segments, _ = self.model.transcribe(
                     audio_float,
@@ -166,18 +182,67 @@ class LiveTranslationSession:
                     best_of=1,
                     temperature=0,
                     condition_on_previous_text=False,
-                    vad_filter=True 
+                    vad_filter=True,
+                    no_speech_threshold=0.7,
+                    log_prob_threshold=-0.8
                 )
                 text = " ".join(s.text for s in segments).strip()
 
                 if text:
                     results.append({"type": "final", "text": text, "audio_duration": audio_duration})
+                    logger.debug(f"Audio duration: {audio_duration:.2f}s")
+                    
 
                 # Reset
                 self.STATE = "WAITING"
                 self.audio_buffer = []
                 self.prebuffer.clear()
+                self.partial_result_sent = False
+                self.speech_start_time = None
                 self.last_speech_time = None
+                
+            if self.speech_start_time and (time() - self.speech_start_time) > PARTIAL_AUDIO_THRESHOLD:
+                combined = b"".join(self.audio_buffer)
+                audio_float = self._bytes_to_float32(combined)
+                audio_duration = len(audio_float) / SAMPLE_RATE
+                if audio_duration < 1.2:
+                    # zu kurz, wahrscheinlich Fehltrigger -> Reset ohne Transkription
+                    self.STATE = "WAITING"
+                    self.audio_buffer = []
+                    self.prebuffer.clear()
+                    self.partial_result_sent = False
+                    self.speech_start_time = None
+                    self.last_speech_time = None
+                    return []
+
+                segments, _ = self.model.transcribe(
+                    audio_float,
+                    language=self.source_lang,
+                    beam_size=1,
+                    best_of=1,
+                    temperature=0,
+                    condition_on_previous_text=False,
+                    vad_filter=True,
+                    no_speech_threshold=0.7,
+                    log_prob_threshold=-0.725
+                )
+                text = " ".join(s.text for s in segments).strip()
+
+                
+                if text:
+                    logger.debug(f"Audio duration: {audio_duration:.2f}s")
+                    if not self.partial_result_sent:
+                        results.append({"type": "partial", "text": text, "audio_duration": audio_duration})
+                        self.partial_result_sent = True
+                    else:
+                        results.append({"type": "final", "text": text, "audio_duration": audio_duration})
+                        self.partial_result_sent = False
+                        self.STATE = "WAITING"
+                        self.audio_buffer = []
+                        self.prebuffer.clear()
+                        self.last_speech_time = None
+                        
+                    self.speech_start_time = time()
 
         return results
     
@@ -186,8 +251,106 @@ class LiveTranslationSession:
         self.audio_buffer = []
         self.prebuffer.clear()
         self.last_speech_time = None
+        self.speech_start_time = None
+        self.partial_result_sent = False
+
+
+# def print_debug_info(segments):
+#     logger.debug("*"*30)
+#     for segment in segments:
+#         logger.debug(f"segment avg_logprob: {segment.avg_logprob}, no_speech_prob: {segment.no_speech_prob}")
+#     logger.debug("*"*30)
+
+
+class TranslationRequest:
+    """Represents a single translation request with metadata."""
+    def __init__(self, text: str, source_lang: str, target_lang: str, use_opus: bool, request_id: str = None):
+        self.text = text
+        self.source_lang = source_lang
+        self.target_lang = target_lang
+        self.use_opus = use_opus
+        self.request_id = request_id or str(time())
+        self.result = None
+        self.error = None
+        self.done_event = asyncio.Event()
+
+
+class TranslationWorker:
+    def __init__(self):
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.is_running = False
+        self.worker_task = None
+        
+    async def start(self):
+        if not self.is_running:
+            self.is_running = True
+            self.worker_task = asyncio.create_task(self._process_queue())
+            logger.debug("Global translation worker started")
+    
+    async def stop(self):
+        self.is_running = False
+        if self.worker_task:
+            try:
+                await asyncio.wait_for(self.worker_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self.worker_task.cancel()
+            logger.debug("Global translation worker stopped")
+    
+    async def queue_translation(self, request: TranslationRequest):
+        await self.queue.put(request)
+        await request.done_event.wait()
+        
+        if request.error:
+            raise Exception(f"Translation error: {request.error}")
+        return request.result
+    
+    async def _process_queue(self):
+        try:
+            while self.is_running:
+                try:
+                    request = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                    
+                    try:
+                        logger.debug(f"Processing translation: {request.source_lang}->{request.target_lang}")
+                        
+                        result = translate(
+                            request.text,
+                            request.source_lang,
+                            request.target_lang,
+                            request.use_opus
+                        )
+                        request.result = result
+                        
+                        # logger.debug(f"Translation completed (ID: {request.request_id})")
+                        logger.debug(f"Translation completed")
+                        
+                    except Exception as e:
+                        request.error = str(e)
+                        logger.error(f"Translation failed (ID: {request.request_id}): {str(e)}")
+                    finally:
+                        request.done_event.set()
+                        self.queue.task_done()
+                        
+                except asyncio.TimeoutError:
+                    continue
+        except Exception as e:
+            logger.error(f"Translation worker error: {str(e)}")
+        finally:
+            self.is_running = False
+
 
 app = FastAPI()
+translation_worker = TranslationWorker()
+
+
+@app.on_event("startup")
+async def startup_event():
+    await translation_worker.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await translation_worker.stop()
 
 
 @app.websocket("/ws/translate")
@@ -265,9 +428,18 @@ async def websocket_translate(websocket: WebSocket):
                         if result["type"] == "final":
                             test_data_map["audio_duration"] = result["audio_duration"]
                             final = result["text"]
-                            logger.debug(f"Erkannter Text: {final}")
+                            logger.info(f"Erkannter Text: {final}")
                             translate_start_time = time()
-                            translated = translate(final.capitalize(), source_lang, target_lang, use_opus)
+                            
+                            # Queue translation request through the worker
+                            trans_request = TranslationRequest(
+                                text=final.capitalize(),
+                                source_lang=source_lang,
+                                target_lang=target_lang,
+                                use_opus=use_opus
+                            )
+                            translated = await translation_worker.queue_translation(trans_request)
+                            
                             mt_time = time() - translate_start_time
                             logger.debug(f"MT Time: {mt_time}")
                             test_data_map["MT"] = mt_time
@@ -283,6 +455,8 @@ async def websocket_translate(websocket: WebSocket):
                             logger.debug("Audio tts result sent")
                             
                             logger.debug("Sending translated text result...")
+                            logger.info(f"Übersetzter Text: {translated}")
+
                             await websocket.send_json({
                                 "type": "translated",
                                 "text": translated
@@ -292,6 +466,33 @@ async def websocket_translate(websocket: WebSocket):
                             test_data_map["total"] = time_took
                             logger.debug("Text result sent")
                             test_data.append(test_data_map)
+                            logger.info("-"*20)
+                        elif result["type"] == "partial":
+                            partial = result["text"]
+                            logger.info(f"Erkannter Partial Text: {partial}")
+                            # trans_request = TranslationRequest(
+                            #     text=final.capitalize(),
+                            #     source_lang=source_lang,
+                            #     target_lang=target_lang,
+                            #     use_opus=use_opus
+                            # )
+                            # translated = await translation_worker.queue_translation(trans_request)
+                            
+                            # tts_audio = await generate_tts(translated, target_lang, voice_gender)  
+                            
+                            # logger.debug("Sending audio tts result...")
+                            # await websocket.send_bytes(tts_audio)
+                            # logger.debug("Audio tts result sent")
+                            
+                            # logger.debug("Sending translated text result...")
+                            # logger.debug(f"Übersetzter Partial Text: {final}")
+                            # await websocket.send_json({
+                            #     "type": "translated",
+                            #     "text": translated
+                            # })
+                            
+                            # logger.debug("Text result sent")      
+                            
                 elif "text" in data and data["text"]:
                     msg = json.loads(data["text"])
                     if msg.get("type") == "reset":
@@ -307,8 +508,9 @@ async def websocket_translate(websocket: WebSocket):
             "message": str(e)
         })
         logger.error(f"Error: {str(e.with_traceback())}")
-    print(f"Test Data: {test_data}")
-    open("test_data.json", "w").write(json.dumps(test_data))
+    
+    # print(f"Test Data: {test_data}")
+    # open("test_data.json", "w").write(json.dumps(test_data))
 
 
 # async def generate_tts(text: str, lang: str, voice_gender: str) -> bytes:
@@ -409,6 +611,8 @@ async def generate_transcript(
 
 
 def translate(text: str, src: str, tgt: str, use_opus: bool):
+    if text.isnumeric(): #opus hat Probleme mit reinen Zahlen, überspringe MT in diesem Fall
+        return text
     if use_opus:
         opus_model = get_opus_model_name(src, tgt)
         if opus_model != "":
