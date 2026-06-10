@@ -43,7 +43,7 @@ console_handler.setFormatter(logging.Formatter(log_format))
 logger.addHandler(console_handler)
 
 SAMPLE_RATE = 16000
-VAD_FRAME_MS = 30        # ms
+VAD_FRAME_MS = 32        # ms
 PREBUFFER_DURATION = 1 # Sekunden
 POST_SPEECH_SILENCE = 0.5 # Sekunden
 PARTIAL_AUDIO_THRESHOLD = 2.75 # Sekunden
@@ -114,14 +114,36 @@ whisper_model = WhisperModel("turbo", device="cuda", compute_type="float16") \
     if torch.cuda.is_available() \
     else WhisperModel("small", device="cpu", compute_type="int8", cpu_threads=8)
 
+
+class VAD(): #Wrapper der funktionen für webrtcvad und silero vad vereinheitlicht
+    def __init__(self, use_silero_vad: bool):
+        self.use_silero_vad = use_silero_vad
+        if not use_silero_vad:
+            self.webrtcvad = webrtcvad.Vad(3)
+        else:
+            self.silero_vad, _ = torch.hub.load('snakers4/silero-vad', 'silero_vad', force_reload=False)
+            # self.silero_vad.to(DEVICE)
+
+    def is_speech(self, frame: bytes, sample_rate: int) -> bool:
+        if self.use_silero_vad:
+            audio_float = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+            # audio_tensor = torch.from_numpy(audio_float).to(DEVICE)
+            audio_tensor = torch.from_numpy(audio_float)
+            with torch.no_grad():
+                confidence = self.silero_vad(audio_tensor, sample_rate)
+                logger.debug(f"Silero VAD confidence: {confidence}")
+            return confidence > 0.5
+        else:
+            return self.webrtcvad.is_speech(frame, sample_rate)
+
 class LiveTranslationSession:
-    def __init__(self, source_lang: str, target_lang: str):
+    def __init__(self, source_lang: str, target_lang: str, use_silero_vad: bool = True):
         self.source_lang = source_lang
         self.target_lang = target_lang
         
         self.model = whisper_model
         
-        self.vad = webrtcvad.Vad(3)
+        self.vad = VAD(use_silero_vad)
         
         self.STATE = "WAITING"
         self.last_speech_time = None
@@ -397,7 +419,8 @@ async def websocket_translate(websocket: WebSocket):
         source_lang = init_data.get("source_lang", "de")
         target_lang = init_data.get("target_lang", "en")
         voice_gender = init_data.get("voice_gender", "male")
-        use_opus = init_data.get("use_better_translation", False)
+        use_opus = init_data.get("use_better_translation", True)
+        # use_silero_vad = init_data.get("use_better_vad", True)
         
         logger.debug(f"languages: {source_lang} to {target_lang}")
         logger.debug(f"translation model: {'Opus-MT' if use_opus else 'Argos'}")
