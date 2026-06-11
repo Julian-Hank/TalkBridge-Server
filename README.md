@@ -6,16 +6,16 @@
 
 ## Overview
 
-The TalkBridge server is a **FastAPI** application that receives audio from the Android client, transcribes it with **faster-whisper**, translates it with **argostranslate**, and synthesizes speech with **edge-tts**. It communicates with clients over WebSocket for real-time streaming and via HTTP for on-demand transcription and translation.
+The TalkBridge server is a **FastAPI** application that receives audio from the Android client, transcribes it with **faster-whisper**, translates it with **argostranslate**, and synthesizes speech with **piper**. It communicates with clients over WebSocket for real-time streaming and via HTTP for on-demand transcription and translation.
 
 ---
 
 ## Features
 
 - **Real-time WebSocket pipeline** — receives PCM 16-bit audio chunks and returns translated text + TTS audio
-- **Voice Activity Detection (VAD)** via `webrtcvad` — segments audio at natural speech boundaries
-- **Speech-to-Text** via `faster-whisper` (`large-v3-turbo` on CUDA, `medium` on CPU)
-- **Machine translation** via `OPUS-MT` and `argostranslate` — offline, no API costs
+- **Voice Activity Detection (VAD)** via `silero-vad` or `webrtcvad` — segments audio at natural speech boundaries
+- **Speech-to-Text** via `faster-whisper` (`large-v3-turbo` on CUDA, `small` on CPU)
+- **Machine translation** via `OPUS-MT` and `argostranslate` — offline
 - **Text-to-Speech** via `piper` - offline, available for 30 languages
 - **SSE streaming** for the `/transcript` endpoint — sends estimated time before the result
 - **GPU acceleration** via CUDA (NVIDIA) — sub-0.25s transcription on RTX 3070
@@ -31,7 +31,7 @@ The TalkBridge server is a **FastAPI** application that receives audio from the 
 | Speech-to-Text | faster-whisper |
 | Translation | OPUS-MT & argostranslate |
 | Text-to-Speech | piper |
-| VAD | webrtcvad |
+| VAD | silero / webrtcvad |
 | Audio processing | NumPy |
 | GPU acceleration | CUDA via PyTorch |
 
@@ -53,9 +53,9 @@ pip install -r requirements.txt
 
 >  Installing via the requirements.txt can have problems - pytoml coming soon
 
-### Install argostranslate language packages
+### Install opus and/or argostranslate language packages
 
-Before running the server, install the required translation and tts packages (see /helper folder for OPUS-MT installation script - piper and argostranslate download scripts might be added in the future for more convenience) 
+Before running the server, install the required translation and tts packages (see /helper folder for OPUS-MT and argos installation script - piper download script might be added in the future for more convenience) 
 
 ---
 
@@ -81,7 +81,7 @@ Main real-time translation endpoint.
   "source_lang": "de",
   "target_lang": "en",
   "use_better_translation": true, //true => opus, false => argos
-  "voice_gender": "male" // not unfinished
+  "voice_gender": "male" // unfinished
 }
 ```
 
@@ -154,7 +154,7 @@ Health check.
 
 ## License
 
-This project was developed as part of a **Jugend Forscht** youth science competition entry.
+This project was developed as part of a **Jugend Forscht**(participation in 2027) youth science competition entry.
 
 
 
