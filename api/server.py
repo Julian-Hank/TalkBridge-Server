@@ -108,7 +108,7 @@ def _find_piper_model(lang: str) -> str | None:
 _available = [l for l in os.listdir(PIPER_MODELS_DIR) 
               if os.path.isdir(os.path.join(PIPER_MODELS_DIR, l))] \
              if os.path.isdir(PIPER_MODELS_DIR) else []
-logger.info(f"Piper-Modelle verfügbar: {_available or 'keine'}")
+# logger.info(f"Piper-Modelle verfügbar: {_available or 'keine'}")
 
 whisper_model = WhisperModel("turbo", device="cuda", compute_type="float16") \
     if torch.cuda.is_available() \
@@ -131,8 +131,8 @@ class VAD(): #Wrapper der funktionen für webrtcvad und silero vad vereinheitlic
             audio_tensor = torch.from_numpy(audio_float)
             with torch.no_grad():
                 confidence = self.silero_vad(audio_tensor, sample_rate)
-                logger.debug(f"Silero VAD confidence: {confidence}")
-            return confidence > 0.5
+                # logger.debug(f"Silero VAD confidence: {confidence}")
+            return confidence > 0.6
         else:
             return self.webrtcvad.is_speech(frame, sample_rate)
 
@@ -211,7 +211,7 @@ class LiveTranslationSession:
                     # no_speech_threshold=0.25,
                     # log_prob_threshold=-0.7
                 )
-                segments = list(segments)
+                # segments = list(segments)
                 texts = []
                 for segment in segments:
                     segment_text = segment.text.strip()
@@ -223,7 +223,7 @@ class LiveTranslationSession:
                     texts.append(segment_text)
                 text = " ".join(t for t in texts).strip()
                     
-                print_debug_info(segments)
+                # print_debug_info(segments)
 
                 if text:
                     results.append({"type": "final", "text": text, "audio_duration": audio_duration})
@@ -263,7 +263,7 @@ class LiveTranslationSession:
                     # no_speech_threshold=0.2,
                     # log_prob_threshold=-0.625
                 )
-                segments = list(segments)
+                # segments = list(segments)
                 texts = []
                 for segment in segments:
                     segment_text = segment.text.strip()
@@ -275,7 +275,7 @@ class LiveTranslationSession:
                     texts.append(segment_text)
                 text = " ".join(t for t in texts).strip()
                     
-                print_debug_info(segments)
+                # print_debug_info(segments)
 
                 
                 if text:
@@ -523,29 +523,7 @@ async def websocket_translate(websocket: WebSocket):
                             logger.info("-"*20)
                         elif result["type"] == "partial":
                             partial = result["text"]
-                            logger.info(f"Erkannter Partial Text: {partial}")
-                            # trans_request = TranslationRequest(
-                            #     text=final.capitalize(),
-                            #     source_lang=source_lang,
-                            #     target_lang=target_lang,
-                            #     use_opus=use_opus
-                            # )
-                            # translated = await translation_worker.queue_translation(trans_request)
-                            
-                            # tts_audio = await generate_tts(translated, target_lang, voice_gender)  
-                            
-                            # logger.debug("Sending audio tts result...")
-                            # await websocket.send_bytes(tts_audio)
-                            # logger.debug("Audio tts result sent")
-                            
-                            # logger.debug("Sending translated text result...")
-                            # logger.debug(f"Übersetzter Partial Text: {final}")
-                            # await websocket.send_json({
-                            #     "type": "translated",
-                            #     "text": translated
-                            # })
-                            
-                            # logger.debug("Text result sent")      
+                            logger.info(f"Erkannter Partial Text: {partial}")    
                             
                 elif "text" in data and data["text"]:
                     msg = json.loads(data["text"])
@@ -565,18 +543,6 @@ async def websocket_translate(websocket: WebSocket):
     
     # print(f"Test Data: {test_data}")
     # open("test_data.json", "w").write(json.dumps(test_data))
-
-
-# async def generate_tts(text: str, lang: str, voice_gender: str) -> bytes:
-#     voice = VOICES.get(lang, "en").get(voice_gender, "male")
-#     communicate = edge_tts.Communicate(text, voice, rate="+10%")
-#     audio_chunks = []
-#     async for chunk in communicate.stream():
-#         if chunk["type"] == "audio":
-#             audio_chunks.append(chunk["data"])
-
-#     return b"".join(audio_chunks)
-
 
 # Model-Cache
 _piper_cache: dict[str, PiperVoice] = {}
@@ -979,15 +945,6 @@ def needs_prefix(model_name):
     
     return True
 
-# @app.post("/preload_model")
-# async def preload_model(background_tasks: BackgroundTasks, source_lang: str = Form(...), target_lang: str = Form(...)):
-#     model_name = get_opus_model_name(source_lang, target_lang)
-
-#     if model_name:
-#         background_tasks.add_task(get_model, model_name)
-
-#     return {"status": "loading"}
-
 @app.get("/")
 async def root():
     return {"message": "TalkBridge WebSocket Server", "status": "running"}
@@ -996,7 +953,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=80, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
     #Local: ws://localhost:80/ws/translate")
     #Network: ws://192.168.178.74:80/ws/translate")
     #Emulator: ws://10.0.2.2:80/ws/translate")
